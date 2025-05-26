@@ -4,6 +4,9 @@ import os
 import json
 import platform
 import time
+from crypto_utils import encrypt_file, generate_aes_key_iv
+from crypto_utils import decrypt_file
+import tempfile
 
 LISTEN_PORT = 5001  # Customize as needed
 BROADCAST_PORT = 5002
@@ -27,17 +30,29 @@ def listen_for_incoming():
         conn, addr = server.accept()
         print(f"[Receiver] Connected by {addr}")
 
-        # Receive filename
+        # Receive filename (encrypted file's name)
         filename = conn.recv(1024).decode()
         conn.send(b'FILENAME_RECEIVED')
 
-        with open(f"received_{filename}", 'wb') as f:
+        encrypted_file_path = f"received_{filename}"
+        with open(encrypted_file_path, 'wb') as f:
             while True:
                 data = conn.recv(1024)
                 if not data:
                     break
                 f.write(data)
-        print(f"[Receiver] File received: received_{filename}")
+
+        print(f"[Receiver] Encrypted file received: {encrypted_file_path}")
+
+        # DECRYPTION step - assuming you have key
+        decrypted_file_path = f"decrypted_{filename.replace('.enc','')}"
+        
+        # Replace 'your_aes_key_here' with actual key bytes, or get from key exchange
+        key = b'your_aes_key_here_32_bytes_long____'  # must be 32 bytes for AES-256
+        
+        decrypt_file(encrypted_file_path, decrypted_file_path, key)
+        print(f"[Receiver] File decrypted and saved as {decrypted_file_path}")
+
         conn.close()
 
 # === Broadcast Presence ===
@@ -73,28 +88,46 @@ def listen_for_broadcasts():
 # === Sender ===
 def send_file(target_ip, target_port, filename):
     try:
+        # === AES setup ===
+        key, iv = generate_aes_key_iv()
+
+        # Temp encrypted file
+        encrypted_path = tempfile.mktemp(suffix=".enc")
+
+        # Encrypt the file
+        encrypt_file(filename, encrypted_path, key, iv)
+
+        # Start socket
         s = socket.socket()
         s.connect((target_ip, target_port))
 
         # Send filename
-        s.send(filename.encode())
+        encrypted_filename = os.path.basename(encrypted_path)
+        s.send(encrypted_filename.encode())
         ack = s.recv(1024).decode()
         if ack != 'FILENAME_RECEIVED':
             print("[Sender] Failed to handshake.")
             s.close()
             return
 
-        with open(filename, 'rb') as f:
+        # Send the encrypted file
+        with open(encrypted_path, 'rb') as f:
             data = f.read(1024)
             while data:
                 s.send(data)
                 data = f.read(1024)
 
-        print(f"[Sender] File '{filename}' sent to {target_ip}.")
+        print(f"[Sender] Encrypted file sent: {filename} → {target_ip}")
+
+        # 🧠 Save the key/iv securely (e.g. send over RSA later)
+        with open(f"{filename}.key", "wb") as f:
+            f.write(key)
     except Exception as e:
         print(f"[Sender] Error: {e}")
     finally:
         s.close()
+        if os.path.exists(encrypted_path):
+            os.remove(encrypted_path) 
 
 # === Main Logic ===
 def main():
