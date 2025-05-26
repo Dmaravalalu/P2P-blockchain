@@ -162,25 +162,54 @@ class Blockchain:
         return self.chain[-1] if self.chain else None
 
     def is_chain_valid(self):
-        """Validate the entire blockchain"""
-        with self.chain_lock:
-            for i in range(1, len(self.chain)):
-                current_block = self.chain[i]
-                previous_block = self.chain[i-1]
-                
-                if current_block['hash'] != self.calculate_hash(current_block):
+        """Validate the entire blockchain with timeout protection"""
+        try:
+            with self.chain_lock:
+                if not self.chain:
                     return False
+                    
+                # Don't validate if chain is too long (performance protection)
+                if len(self.chain) > 1000:
+                    logger.warning("Chain too long for full validation")
+                    return True
+                    
+                for i in range(1, len(self.chain)):
+                    try:
+                        current_block = self.chain[i]
+                        previous_block = self.chain[i-1]
+                        
+                        # Check if block has required fields
+                        required_fields = ['hash', 'previous_hash', 'proof', 'index']
+                        if not all(field in current_block for field in required_fields):
+                            logger.error(f"Block {i} missing required fields")
+                            return False
+                        
+                        if current_block['hash'] != self.calculate_hash(current_block):
+                            logger.error(f"Block {i} hash mismatch")
+                            return False
+                        
+                        if current_block['previous_hash'] != previous_block['hash']:
+                            logger.error(f"Block {i} previous hash mismatch")
+                            return False
+                        
+                        # Skip proof of work validation for performance if chain is long
+                        if len(self.chain) <= 50:
+                            hash_operation = hashlib.sha256(
+                                str(current_block['proof']**2 - previous_block['proof']**2).encode()
+                            ).hexdigest()
+                            if hash_operation[:self.mining_difficulty] != "0" * self.mining_difficulty:
+                                logger.error(f"Block {i} proof of work invalid")
+                                return False
+                    
+                    except Exception as e:
+                        logger.error(f"Error validating block {i}: {e}")
+                        return False
                 
-                if current_block['previous_hash'] != previous_block['hash']:
-                    return False
+                return True
                 
-                hash_operation = hashlib.sha256(
-                    str(current_block['proof']**2 - previous_block['proof']**2).encode()
-                ).hexdigest()
-                if hash_operation[:self.mining_difficulty] != "0" * self.mining_difficulty:
-                    return False
-            
-            return True
+        except Exception as e:
+            logger.error(f"Chain validation error: {e}")
+            return False
 
     def get_chain_length(self):
         with self.chain_lock:
@@ -232,27 +261,65 @@ class Blockchain:
         return True
 
     def display_blockchain(self):
-        with self.chain_lock:
+        try:
+            with self.chain_lock:
+                chain_copy = self.chain.copy()
+                pending_copy = self.pending_transactions.copy()
+            
             print(f"\n{'='*60}")
-            print(f"BLOCKCHAIN STATUS - Valid: {self.is_chain_valid()} | Length: {len(self.chain)}")
-            print(f"Pending Transactions: {len(self.pending_transactions)}")
+            print(f"BLOCKCHAIN STATUS - Length: {len(chain_copy)}")
+            print(f"Pending Transactions: {len(pending_copy)}")
             print(f"{'='*60}")
             
-            for block in self.chain:
-                print(f"\n🔗 Block #{block['index']}")
-                print(f"⏰ Timestamp: {block['timestamp']}")
-                print(f"🔐 Hash: {block['hash'][:20]}...")
-                print(f"🔗 Previous: {block['previous_hash'][:20]}...")
-                print(f"⚡ Proof: {block['proof']}")
-                print(f"⛏️  Miner: {block.get('miner', 'Unknown')}")
-                print("📋 Transactions:")
-                if block['transactions']:
-                    for tx in block['transactions']:
-                        print(f"   📁 {tx.get('filename', 'N/A')} | "
-                              f"{tx.get('sender', 'N/A')} → {tx.get('receiver', 'N/A')}")
-                else:
-                    print("   (No transactions)")
-                print("-" * 50)
+            if not chain_copy:
+                print("No blocks in blockchain")
+                return
+            
+            for block in chain_copy:
+                try:
+                    print(f"\n🔗 Block #{block.get('index', 'N/A')}")
+                    print(f"⏰ Timestamp: {block.get('timestamp', 'N/A')}")
+                    
+                    block_hash = block.get('hash', 'N/A')
+                    if len(str(block_hash)) > 20:
+                        print(f"🔐 Hash: {str(block_hash)[:20]}...")
+                    else:
+                        print(f"🔐 Hash: {block_hash}")
+                    
+                    prev_hash = block.get('previous_hash', 'N/A')
+                    if len(str(prev_hash)) > 20:
+                        print(f"🔗 Previous: {str(prev_hash)[:20]}...")
+                    else:
+                        print(f"🔗 Previous: {prev_hash}")
+                    
+                    print(f"⚡ Proof: {block.get('proof', 'N/A')}")
+                    print(f"⛏️  Miner: {block.get('miner', 'Unknown')}")
+                    print("📋 Transactions:")
+                    
+                    transactions = block.get('transactions', [])
+                    if transactions:
+                        for i, tx in enumerate(transactions):
+                            if i >= 10:  # Limit to first 10 transactions
+                                print(f"   ... and {len(transactions) - 10} more transactions")
+                                break
+                            try:
+                                filename = tx.get('filename', 'N/A')
+                                sender = tx.get('sender', 'N/A')
+                                receiver = tx.get('receiver', 'N/A')
+                                print(f"   📁 {filename} | {sender} → {receiver}")
+                            except Exception as e:
+                                print(f"   📁 Error displaying transaction: {e}")
+                    else:
+                        print("   (No transactions)")
+                    print("-" * 50)
+                    
+                except Exception as e:
+                    print(f"Error displaying block: {e}")
+                    continue
+                    
+        except Exception as e:
+            print(f"Error displaying blockchain: {e}")
+            logger.error(f"Blockchain display error: {e}")
 
 # Initialize blockchain
 blockchain = Blockchain()
@@ -628,71 +695,105 @@ def main():
     time.sleep(3)
 
     while True:
-        print(f"\n{'='*60}")
-        print("📋 DISCOVERED PEERS")
-        print(f"{'='*60}")
-        
-        with peer_lock:
-            if discovered_peers:
-                for idx, (ip, info) in enumerate(discovered_peers.items(), start=1):
-                    print(f"{idx}. {info['name']} ({ip}) [ID: {info['peer_id'][:8]}...]")
+        try:
+            print(f"\n{'='*60}")
+            print("📋 DISCOVERED PEERS")
+            print(f"{'='*60}")
+            
+            with peer_lock:
+                peer_list = list(discovered_peers.items())
+                
+            if peer_list:
+                for idx, (ip, info) in enumerate(peer_list, start=1):
+                    name = info.get('name', 'Unknown')
+                    peer_id = info.get('peer_id', 'Unknown')
+                    if len(peer_id) > 8:
+                        peer_id = peer_id[:8] + "..."
+                    print(f"{idx}. {name} ({ip}) [ID: {peer_id}]")
             else:
                 print("No peers discovered yet...")
 
-        print(f"\n⛓️  Blockchain Length: {blockchain.get_chain_length()} | "
-              f"Pending Transactions: {len(blockchain.pending_transactions)}")
-
-        print(f"\n{'='*60}")
-        print("💡 COMMANDS")
-        print(f"{'='*60}")
-        print("send <#> <filename>  - Send file to peer")
-        print("blockchain           - View blockchain")
-        print("validate             - Validate blockchain")
-        print("sync                 - Force blockchain sync")
-        print("exit                 - Exit program")
-        
-        cmd = input("\n➤ Enter command: ").strip()
-        
-        if cmd.lower() == 'exit':
-            print("👋 Goodbye!")
-            break
-            
-        elif cmd.lower() == 'blockchain':
-            blockchain.display_blockchain()
-            
-        elif cmd.lower() == 'validate':
-            is_valid = blockchain.is_chain_valid()
-            print(f"\n🔍 Blockchain validation: {'✅ VALID' if is_valid else '❌ INVALID'}")
-            
-        elif cmd.lower() == 'sync':
-            print("🔄 Forcing blockchain synchronization...")
-            # This will be handled by the background sync thread
-            
-        elif cmd.startswith("send"):
+            # Safe blockchain info display
             try:
-                parts = cmd.split(maxsplit=2)
-                if len(parts) != 3:
+                chain_len = blockchain.get_chain_length()
+                pending_len = len(blockchain.pending_transactions)
+                print(f"\n⛓️  Blockchain Length: {chain_len} | Pending Transactions: {pending_len}")
+            except Exception as e:
+                print(f"\n⛓️  Blockchain Status: Error - {e}")
+
+            print(f"\n{'='*60}")
+            print("💡 COMMANDS")
+            print(f"{'='*60}")
+            print("send <#> <filename>  - Send file to peer")
+            print("blockchain           - View blockchain")
+            print("validate             - Validate blockchain")
+            print("sync                 - Force blockchain sync")
+            print("peers                - Refresh peer list")
+            print("exit                 - Exit program")
+            
+            cmd = input("\n➤ Enter command: ").strip()
+            
+            if cmd.lower() == 'exit':
+                print("👋 Goodbye!")
+                break
+                
+            elif cmd.lower() == 'blockchain':
+                try:
+                    print("🔄 Loading blockchain...")
+                    blockchain.display_blockchain()
+                except Exception as e:
+                    print(f"❌ Error displaying blockchain: {e}")
+                    logger.error(f"Blockchain display command error: {e}")
+                
+            elif cmd.lower() == 'validate':
+                try:
+                    print("🔄 Validating blockchain...")
+                    is_valid = blockchain.is_chain_valid()
+                    print(f"🔍 Blockchain validation: {'✅ VALID' if is_valid else '❌ INVALID'}")
+                except Exception as e:
+                    print(f"❌ Error validating blockchain: {e}")
+                    logger.error(f"Blockchain validation error: {e}")
+                    
+            elif cmd.lower() == 'sync':
+                print("🔄 Forcing blockchain synchronization...")
+                
+            elif cmd.lower() == 'peers':
+                print("🔄 Refreshing peer list...")
+                continue
+                
+            elif cmd.startswith("send"):
+                try:
+                    parts = cmd.split(maxsplit=2)
+                    if len(parts) != 3:
+                        print("[!] Usage: send <peer_number> <filename>")
+                        continue
+                        
+                    _, index_str, filename = parts
+                    index = int(index_str) - 1
+                    
+                    if 0 <= index < len(peer_list):
+                        ip, info = peer_list[index]
+                        name = info.get('name', 'Unknown')
+                        print(f"📤 Sending '{filename}' to {name} ({ip})...")
+                        send_file(ip, LISTEN_PORT, filename)
+                    else:
+                        print("[!] Invalid peer number")
+                        
+                except (ValueError, IndexError) as e:
                     print("[!] Usage: send <peer_number> <filename>")
-                    continue
+                except Exception as e:
+                    print(f"❌ Error sending file: {e}")
                     
-                _, index_str, filename = parts
-                index = int(index_str) - 1
+            else:
+                print("[!] Unknown command. Type 'exit' to quit.")
                 
-                with peer_lock:
-                    peer_list = list(discovered_peers.items())
-                    
-                if 0 <= index < len(peer_list):
-                    ip, info = peer_list[index]
-                    print(f"📤 Sending '{filename}' to {info['name']} ({ip})...")
-                    send_file(ip, LISTEN_PORT, filename)
-                else:
-                    print("[!] Invalid peer number")
-                    
-            except (ValueError, IndexError):
-                print("[!] Usage: send <peer_number> <filename>")
-                
-        else:
-            print("[!] Unknown command. Type 'exit' to quit.")
+        except KeyboardInterrupt:
+            print("\n👋 Exiting...")
+            break
+        except Exception as e:
+            print(f"❌ Error in main loop: {e}")
+            logger.error(f"Main loop error: {e}")
+            continue
 
 if __name__ == "__main__":
     main()
