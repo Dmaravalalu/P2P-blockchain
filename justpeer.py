@@ -13,7 +13,7 @@ BROADCAST_IP = '255.255.255.255'
 
 # IP and port of the blockchain host (replace with your host's IP)
 HOST_IP = '192.168.1.X'        # <-- set your blockchain host IP here
-HOST_BLOCKCHAIN_PORT = 6000    # Port host listens on for blockchain metadata & queries
+HOST_BLOCKCHAIN_PORT = 9000    # Port host listens on for blockchain metadata & queries
 
 PEER_NAME = platform.node() or socket.gethostname()
 discovered_peers = {}

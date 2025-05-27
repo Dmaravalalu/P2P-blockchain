@@ -30,15 +30,15 @@ def handle_blockchain_client(conn, addr):
         data = conn.recv(65536).decode()
         request = json.loads(data)
 
-        if request['type'] == 'add_block':
-            metadata = request['metadata']
+        if request['type'] == 'metadata':
+            metadata = request['data']
             prev_hash = blockchain[-1]['hash'] if blockchain else '0'
             block = create_block(metadata, prev_hash)
             blockchain.append(block)
             print(f"[BLOCKCHAIN] Block added: {metadata}")
             conn.send(json.dumps({'status': 'success', 'block': block}).encode())
 
-        elif request['type'] == 'get_chain':
+        elif request['type'] == 'get_blockchain':
             conn.send(json.dumps({'status': 'success', 'chain': blockchain}).encode())
         else:
             conn.send(json.dumps({'status': 'error', 'message': 'Invalid request'}).encode())
