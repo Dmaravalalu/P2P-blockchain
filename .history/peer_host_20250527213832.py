@@ -157,7 +157,7 @@ def request_blockchain():
     try:
         client = socket.socket()
         client.connect(('127.0.0.1', BLOCKCHAIN_PORT))
-        request = json.dumps({'type': 'get_blockchain'}).encode()
+        request = json.dumps({'type': 'get_chain'}).encode()
         client.send(request)
         resp = json.loads(client.recv(65536).decode())
         for block in resp['chain']:
