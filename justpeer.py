@@ -4,19 +4,18 @@ import os
 import json
 import platform
 import time
-from crypto_utils import encrypt_file, generate_aes_key_iv
-from crypto_utils import decrypt_file
-import tempfile
+from datetime import datetime
 
-LISTEN_PORT = 5001  # Customize as needed
+LISTEN_PORT = 5001
 BROADCAST_PORT = 5002
 BROADCAST_INTERVAL = 5  # seconds
 BROADCAST_IP = '255.255.255.255'
 
-# Get peer name
-PEER_NAME = platform.node() or socket.gethostname()
+# IP and port of the blockchain host (replace with your host's IP)
+HOST_IP = '192.168.1.X'        # <-- set your blockchain host IP here
+HOST_BLOCKCHAIN_PORT = 6000    # Port host listens on for blockchain metadata & queries
 
-# Dictionary to store discovered peers
+PEER_NAME = platform.node() or socket.gethostname()
 discovered_peers = {}
 
 # === Receiver Thread ===
@@ -30,29 +29,18 @@ def listen_for_incoming():
         conn, addr = server.accept()
         print(f"[Receiver] Connected by {addr}")
 
-        # Receive filename (encrypted file's name)
         filename = conn.recv(1024).decode()
         conn.send(b'FILENAME_RECEIVED')
 
-        encrypted_file_path = f"received_{filename}"
-        with open(encrypted_file_path, 'wb') as f:
+        received_file_path = f"received_{filename}"
+        with open(received_file_path, 'wb') as f:
             while True:
                 data = conn.recv(1024)
                 if not data:
                     break
                 f.write(data)
 
-        print(f"[Receiver] Encrypted file received: {encrypted_file_path}")
-
-        # DECRYPTION step - assuming you have key
-        decrypted_file_path = f"decrypted_{filename.replace('.enc','')}"
-        
-        # Replace 'your_aes_key_here' with actual key bytes, or get from key exchange
-        key = b'your_aes_key_here_32_bytes_long____'  # must be 32 bytes for AES-256
-        
-        decrypt_file(encrypted_file_path, decrypted_file_path, key)
-        print(f"[Receiver] File decrypted and saved as {decrypted_file_path}")
-
+        print(f"[Receiver] File received: {received_file_path}")
         conn.close()
 
 # === Broadcast Presence ===
@@ -85,64 +73,82 @@ def listen_for_broadcasts():
         except:
             continue
 
+# === Send metadata to blockchain host before file transfer ===
+def send_metadata_to_host(filename, receiver_ip):
+    metadata = {
+        'sender': socket.gethostbyname(socket.gethostname()),
+        'receiver': receiver_ip,
+        'filename': os.path.basename(filename),
+        'timestamp': datetime.utcnow().isoformat()
+    }
+    try:
+        s = socket.socket()
+        s.connect((HOST_IP, HOST_BLOCKCHAIN_PORT))
+        s.send(json.dumps({'type': 'metadata', 'data': metadata}).encode())
+        print(f"[Metadata] Sent to host for file: {filename}")
+        s.close()
+    except Exception as e:
+        print(f"[Metadata] Error sending to host: {e}")
+
+# === Request full blockchain from host ===
+def request_blockchain_from_host():
+    try:
+        s = socket.socket()
+        s.connect((HOST_IP, HOST_BLOCKCHAIN_PORT))
+        s.send(json.dumps({'type': 'get_blockchain'}).encode())
+        blockchain_data = b''
+        while True:
+            part = s.recv(4096)
+            if not part:
+                break
+            blockchain_data += part
+        print(f"[Blockchain] Received:\n{blockchain_data.decode()}")
+        s.close()
+    except Exception as e:
+        print(f"[Blockchain] Error requesting from host: {e}")
+
 # === Sender ===
 def send_file(target_ip, target_port, filename):
     try:
-        # === AES setup ===
-        key, iv = generate_aes_key_iv()
+        # Send metadata to host first
+        send_metadata_to_host(filename, target_ip)
 
-        # Temp encrypted file
-        encrypted_path = tempfile.mktemp(suffix=".enc")
-
-        # Encrypt the file
-        encrypt_file(filename, encrypted_path, key, iv)
-
-        # Start socket
+        # Start socket to send file
         s = socket.socket()
         s.connect((target_ip, target_port))
 
-        # Send filename
-        encrypted_filename = os.path.basename(encrypted_path)
-        s.send(encrypted_filename.encode())
+        file_basename = os.path.basename(filename)
+        s.send(file_basename.encode())
         ack = s.recv(1024).decode()
         if ack != 'FILENAME_RECEIVED':
             print("[Sender] Failed to handshake.")
             s.close()
             return
 
-        # Send the encrypted file
-        with open(encrypted_path, 'rb') as f:
+        with open(filename, 'rb') as f:
             data = f.read(1024)
             while data:
                 s.send(data)
                 data = f.read(1024)
 
-        print(f"[Sender] Encrypted file sent: {filename} → {target_ip}")
-
-        # 🧠 Save the key/iv securely (e.g. send over RSA later)
-        with open(f"{filename}.key", "wb") as f:
-            f.write(key)
+        print(f"[Sender] File sent: {filename} → {target_ip}")
     except Exception as e:
         print(f"[Sender] Error: {e}")
     finally:
         s.close()
-        if os.path.exists(encrypted_path):
-            os.remove(encrypted_path) 
 
 # === Main Logic ===
 def main():
-    # Start listener thread
     threading.Thread(target=listen_for_incoming, daemon=True).start()
     threading.Thread(target=broadcast_presence, daemon=True).start()
     threading.Thread(target=listen_for_broadcasts, daemon=True).start()
 
-    # Command loop
     while True:
         print("\n[Discovered Peers]")
         for idx, (ip, name) in enumerate(discovered_peers.items(), start=1):
             print(f"{idx}. {name} ({ip})")
 
-        cmd = input("\n[COMMAND] Enter: send <#> <filename> or 'exit': ").strip()
+        cmd = input("\n[COMMAND] Enter: send <#> <filename>, getchain or 'exit': ").strip()
         if cmd.lower() == 'exit':
             print("[System] Exiting...")
             break
@@ -154,6 +160,8 @@ def main():
                 send_file(ip, LISTEN_PORT, filename)
             except (ValueError, IndexError):
                 print("[!] Usage: send <peer_number> <filename>")
+        elif cmd.lower() == 'getchain':
+            request_blockchain_from_host()
         else:
             print("[!] Unknown command.")
 
